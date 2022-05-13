@@ -19,14 +19,13 @@ const MAX_REQUEST_URL_PAUSE = 10000;
 const write = util.promisify(fs.write);
 const PICONS_PATH = 'picons';
 const RESULT_TABLE_HTML_FILE = `ntvp-channels-list.${fileSignature}.html`;
-const DREAMBOX_LAMEDB_FILE = './dreamBox/lamedb';
+const DREAMBOX_LAMEDB_FILE = './lamedb/lamedb';
 const DREAMBOX_LAMEDB_GENERATED_FILE = `lamedb.${fileSignature}`;
 
 let ntvChannels = [];
 let ntvAligned = [];
 let transponders = [];
 let services = [];
-
 
 const rusToLatin = (function () {
   const in__chrs = 'абвгдеёзийклмнопрстуфхыэю';
@@ -63,8 +62,9 @@ function getUrl(url, fileType = 'utf-8') {
     util.promisify(fs.readFile)(cacheFileName, fileType)
         .then(resolve)
         .catch(() => {
+          console.log('Loading from URL ' + url);
           setTimeout(() => {  // я растягиваю запросы на случайное врем в пределах (см. константу)
-//          console.log('Loading from URL ' + url);
+
             fetch(url)
               .then(res => {
                 if (!res.ok) {
@@ -77,8 +77,10 @@ function getUrl(url, fileType = 'utf-8') {
                 return res.text();
               })
               .then(resolve)
-
-              .catch(reject);
+              .catch(e => {
+                console.error("Loading error for", url);
+                reject(e);
+              });
           }, Math.random() * MAX_REQUEST_URL_PAUSE)
         });
   });
@@ -94,6 +96,8 @@ async function parseChannelIcon(channel) {
   const iconUrl = infoHtml.match(/og:image.*?content="(.*?)"/);
   const descr = infoHtml.match(/<\/h1.*?richtext\s+channel--text">(.*?)<\/div/s);
 
+ // console.log('Parse', channel.name, iconUrl[1]);
+
   if (iconUrl && iconUrl[1]) {
     channel.icon = iconUrl[1];
   }
@@ -103,9 +107,14 @@ async function parseChannelIcon(channel) {
   }
 
   if (channel.icon) {
-    await getUrl(channel.icon);
+    try {
+      await getUrl(channel.icon);
 
-    channel.local_icon = await copyLocalIcon(channel.icon, createIconName(channel));
+      channel.local_icon = await copyLocalIcon(channel.icon, createIconName(channel));
+    }
+    catch(e) {
+      console.error("Problem with", channel.icon, e);
+    }
   }
 
   return channel;
@@ -151,6 +160,9 @@ function copyLocalIcon(url, fileName) {
                  } else resolve(localName)
                })
           })
+      })
+      .catch(e => {
+        console.error("Image loading error:", url, fileName, e.message || e);
       })
   )
 }
@@ -198,6 +210,7 @@ function scanChannelsInfo(table) {
   fs.mkdir(LOCAL_ICONS_PATH, {recursive: true}, () => {
   });
 
+  // return Promise.all(table.map(async channel=> await parseChannelIcon(channel)));
   return Promise.all(table.map(channel => parseChannelIcon(channel)))
 }
 
