@@ -48,3 +48,8 @@ Thumbs.db
 *.mov
 *.wmv
 
+#TV-bouquets specific
+*.zip
+/picons
+/local_icons/
+/src/cache/

@@ -1,0 +1,22 @@
+{
+  "name": "tv-bouquets",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node ./src/ntvp-scanner.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dayjs": "^1.11.2",
+    "fs": "0.0.1-security",
+    "html-entities": "^1.2.1",
+    "lodash": "^4.17.15",
+    "node-fetch": "^2.6.0",
+    "promisify": "0.0.3",
+    "sharp": "^0.26.0",
+    "striptags": "^3.1.1",
+    "util": "^0.12.2"
+  }
+}
