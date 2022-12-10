@@ -15,7 +15,7 @@ const LOCAL_ICONS_SX = 220;
 const LOCAL_ICONS_SY = 132;
 const NTVP_DOMAIN = 'https://ntvplus.ru';
 const NTVP_URL = '/faq/nastrojka-kanalov-54';
-const MAX_REQUEST_URL_PAUSE = 10000;
+const MAX_REQUEST_URL_PAUSE = 20000;
 const write = util.promisify(fs.write);
 const PICONS_PATH = 'picons';
 const RESULT_TABLE_HTML_FILE = `ntvp-channels-list.${fileSignature}.html`;
@@ -46,7 +46,16 @@ const rusToLatin = (function () {
   }
 })();
 
+const similarRus = 'кенхваросмт';
+const similarLat = 'kehxbapocmt';
+const rusToSimilarLat = letter => {
+  const index = similarRus.indexOf(letter);
+  return index>=0 ? similarLat.at(index) : letter;
+}
+
 const processName = name => name.toLowerCase()
+                                .replace(/&\w{2,5};/g, '')
+                                .replace(/./g, rusToSimilarLat)
                                 .replace(/[^\w\dйцукенгшщзхъфывапролджэячсмитьбю]/g, '');
 
 function urlToFilename(_url) {
@@ -58,22 +67,30 @@ function urlToFilename(_url) {
 function getUrl(url, fileType = 'utf-8') {
   const cacheFileName = CACHE_PATH + '/' + urlToFilename(url);
 
+  if (!url) {
+    console.error("URL is empty in getUrl()");
+  }
+
   return new Promise((resolve, reject) => {
     util.promisify(fs.readFile)(cacheFileName, fileType)
         .then(resolve)
         .catch(() => {
-          console.log('Loading from URL ' + url);
+          console.log(`Loading from URL [${url}]`);
           setTimeout(() => {  // я растягиваю запросы на случайное врем в пределах (см. константу)
 
+            console.log("==beforeFetch")
             fetch(url)
               .then(res => {
+                console.log("===host responded");
                 if (!res.ok) {
                   throw new Error(`Response with ${res.status} from ${url}`);
                 }
                 fs.mkdir(CACHE_PATH, {recursive: true}, () => {
                 });
                 const dest = fs.createWriteStream(cacheFileName);
+                console.log("===writeStremCreated");
                 res.body.pipe(dest);
+                console.log("===piping");
                 return res.text();
               })
               .then(resolve)
@@ -92,6 +109,10 @@ function getChannelTable() {
 }
 
 async function parseChannelIcon(channel) {
+  if (!channel.infoUrl) {
+    console.error("*** Channel with no infoIrl", channel);
+    return;
+  }
   const infoHtml = await getUrl(NTVP_DOMAIN + channel.infoUrl);
   const iconUrl = infoHtml.match(/og:image.*?content="(.*?)"/);
   const descr = infoHtml.match(/<\/h1.*?richtext\s+channel--text">(.*?)<\/div/s);
@@ -106,7 +127,7 @@ async function parseChannelIcon(channel) {
     channel.description = entities.decode(striptags(descr[1]));
   }
 
-  if (channel.icon) {
+  if (channel.icon && channel.icon !== NTVP_DOMAIN) {
     try {
       await getUrl(channel.icon);
 
@@ -114,6 +135,14 @@ async function parseChannelIcon(channel) {
     }
     catch(e) {
       console.error("Problem with", channel.icon, e);
+
+
+      // Clean cache file for this icon (since it may be corrupted while loading and best idea is to just...reload)
+      const cacheFileName = CACHE_PATH + '/' + urlToFilename(channel.icon);
+
+      fs.unlink(cacheFileName, ()=>{
+        console.log(`File ${ cacheFileName } is unlinked because its probably corrupted and will be reload later`)
+      })
     }
   }
 
@@ -122,6 +151,7 @@ async function parseChannelIcon(channel) {
 
 function copyLocalIcon(url, fileName) {
   const localName = fileName + '.png';
+ // console.log(`=copy local file ${url}`);
 
   return new Promise((resolve, reject) =>
     getUrl(url, null).then(
@@ -181,7 +211,7 @@ function parseTableLine(lineArr) {
   );
 
   return _.map([...lineArr[2].matchAll(/<a\s+href=['"](.*?)["'][^>]{0,}>(.*?)<\/a>/sg)], channel => {
-    return {
+     const ret = {
       name: channel[2],
       infoUrl: channel[1],
       freq: freq.split(' ')[0],
@@ -190,6 +220,11 @@ function parseTableLine(lineArr) {
       modulation,
       sr: parseInt(sr)
     }
+
+
+    //console.log("****", ret);
+
+    return ret;
   });
 }
 
@@ -201,6 +236,8 @@ function parseChannelsTable(html) {
   }
 
   const lines = [...text[1].matchAll(/<tr><td>(.*?)<\/td><td>(.*?)<\/td><td>(.*?)<\/td><td>(.*?)<\/td><\/tr>/sg)];
+
+ // console.log("===RAW NTV website channels matches", lines);
 
   return _.flatten(_.map(lines, parseTableLine));
 }
@@ -234,7 +271,8 @@ function scanNtv() {
   return getChannelTable()
     .then(parseChannelsTable)
     //            .then(list=>list.slice(0,5))
-    //  .then(list=>_.filter(list, item=>createIconName(item)==='kinouzhas'))
+    //  .then(list=>_.filter(list, item=>item.name.indexOf('Shop')>=0))
+    //  .then(list=>{ console.log('List:', list); return list;})
     .then(scanChannelsInfo)
     .then(table => {
       ntvChannels = table;
@@ -254,9 +292,10 @@ function getTransponders(text) {
   items.pop();
 
   console.log('Transponders found:', items.length);
+//  console.log('Transponders data:', items);
 
   return _.map(items, item => {
-    const t = item.match(/\s+(\w+):(\w+):(\w+)\n\s+s\s+(\d+):(\d+):(\d):(\d{1,2}):(\d+):(\d):(\d):?(\d)?:?(\d)?:?(\d)?:?(\d)?/s);
+    const t = item.match(/\s+(\w+):(\w+):(\w+)\n\s+[st]\s+(\d+):(\d+):(\d):(\d{1,2}):(\d+):(\d):(\d):?(\d)?:?(\d)?:?(\d)?:?(\d)?/s);
 
     return {
       text: item,
@@ -368,6 +407,7 @@ function alignServices() {
 
   console.log('## Align services');
   _.each(services, service => {
+ //   console.log('==Service name is processed to', processName(service.name));
     const ntv = _.find(ntvChannels, item => processName(item.name) === processName(service.name));
 
     if (ntv) {
@@ -452,7 +492,7 @@ function scanLameDb() {
              .then(text => {
                transponders = getTransponders(text);
                services = getServices(text);
-
+//console.log("====Services", services)
                alignServices();
                updateServices();
                copyPicons();
@@ -467,3 +507,13 @@ scanNtv()
     console.log(`#### All DONE. Files signature is [${fileSignature}]`)
   })
   .catch(error => console.error('Global throws:', error));
+
+/*
+Инструкция для успеха
+* Удалить cache - иначе вообще ничего нового не скачается.
+* Убедиться что файл lamedb в одноименной папке - новый, мы сопоставляем с его содержимым (файл должен быть прислан)
+* Запускать несколько раз - некоторые файлы иконок скачиваются битые или та сторона обрывает соединения.
+
++  в строках 274 можно ограничить выборку каналов, чтобы видеть детальнее на малом числе.
++ регэксп транспондеров строка примерно 298) может ломаться, смотреть формат инфы по транспондерам
+*/
