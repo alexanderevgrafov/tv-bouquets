@@ -16,11 +16,15 @@ const LOCAL_ICONS_SY = 132;
 const NTVP_DOMAIN = 'https://ntvplus.ru';
 const NTVP_URL = '/faq/nastrojka-kanalov-54';
 const MAX_REQUEST_URL_PAUSE = 20000;
-const write = util.promisify(fs.write);
+const fdRead = util.promisify(fs.readFile);
+const fdWrite = util.promisify(fs.write);
+const fdClose = util.promisify(fs.close);
 const PICONS_PATH = 'picons';
 const RESULT_TABLE_HTML_FILE = `ntvp-channels-list.${fileSignature}.html`;
 const DREAMBOX_LAMEDB_FILE = './lamedb/lamedb';
 const DREAMBOX_LAMEDB_GENERATED_FILE = `lamedb.${fileSignature}`;
+const ORPHANS_PAIRS_FILE = 'pairs_lost.txt';   // We output here unsync channels.  You may pair them and put into next file
+const FORCED_PAIRS_FILE = 'pairs_forced.txt';
 
 let ntvChannels = [];
 let ntvAligned = [];
@@ -72,25 +76,20 @@ function getUrl(url, fileType = 'utf-8') {
   }
 
   return new Promise((resolve, reject) => {
-    util.promisify(fs.readFile)(cacheFileName, fileType)
+    fdRead(cacheFileName, fileType)
         .then(resolve)
         .catch(() => {
           console.log(`Loading from URL [${url}]`);
           setTimeout(() => {  // я растягиваю запросы на случайное врем в пределах (см. константу)
-
-            console.log("==beforeFetch")
             fetch(url)
               .then(res => {
-                console.log("===host responded");
                 if (!res.ok) {
                   throw new Error(`Response with ${res.status} from ${url}`);
                 }
                 fs.mkdir(CACHE_PATH, {recursive: true}, () => {
                 });
                 const dest = fs.createWriteStream(cacheFileName);
-                console.log("===writeStremCreated");
                 res.body.pipe(dest);
-                console.log("===piping");
                 return res.text();
               })
               .then(resolve)
@@ -261,7 +260,7 @@ function outputTable(table) {
 
   return util.promisify(fs.open)(RESULT_TABLE_HTML_FILE, 'w')
              .then(fd =>
-               write(fd, text).then(() => util.promisify(fs.close)(fd))
+               fdWrite(fd, text).then(() => fdClose(fd))
              )
              .catch(err => console.error('Table write error', err))
 }
@@ -372,27 +371,27 @@ function transponderToLameString(t) {
 
 function serviceToLameString(s) {
   return [s.serviceId, s.namespace, s.streamId, s.networkId, s.type, s.serviceNum].join(':') + '\n' +
-    s.name + '\n' + s.providerData + '\n';
+    ((s.ntv && s.ntv.name) || s.name) + '\n' + s.providerData + '\n';
 }
 
 function createLameDb(trans, serv) {
   console.log('## Create Lame DB');
   return util.promisify(fs.open)(DREAMBOX_LAMEDB_GENERATED_FILE, 'w')
              .then(fd => {
-               return write(fd, 'eDVB services /4/\ntransponders\n')
-                 .then(write(fd, _.map(trans, item => transponderToLameString(item))
+               return fdWrite(fd, 'eDVB services /4/\ntransponders\n')
+                 .then(fdWrite(fd, _.map(trans, item => transponderToLameString(item))
                                   .join('')))
-                 .then(write(fd, 'end\nservices\n'))
-                 .then(write(fd, _.map(serv, item => serviceToLameString(item))
+                 .then(fdWrite(fd, 'end\nservices\n'))
+                 .then(fdWrite(fd, _.map(serv, item => serviceToLameString(item))
                                   .join('')))
                  // .then(()=>{
                  //   console.log('***** dbg12')
                  // })
-                 .then(write(fd, 'end\nEdited with manEdit'))
+                 .then(fdWrite(fd, 'end\nEdited with manEdit'))
                  // .then(()=>{
                  //   console.log('***** dbg13')
                  // })
-                 .then(util.promisify(fs.close)(fd))
+                 .then(fdClose(fd))
                  // .then(()=>{
                  //   console.log('***** dbg14')
                  // })
@@ -405,10 +404,23 @@ function createLameDb(trans, serv) {
 function alignServices() {
   let orphans = [];
 
-  console.log('## Align services');
+  const forcedPairsText = fs.readFileSync(FORCED_PAIRS_FILE, 'utf-8');
+  const forcedPairs = _.map(forcedPairsText.split('\n'), line=>line.indexOf('===')>0?line.split('==='):null);
+  // console.log("Forced:", forcedPairs);
+  const forcedMap = _.fromPairs(_.compact(forcedPairs));
+
+  // console.log("Forced:", forcedMap);
+
+  console.log(`## Align services (${_.values(forcedMap).length} names are forced by '${FORCED_PAIRS_FILE}')`);
   _.each(services, service => {
  //   console.log('==Service name is processed to', processName(service.name));
-    const ntv = _.find(ntvChannels, item => processName(item.name) === processName(service.name));
+    let ntv;
+
+    if (forcedMap[service.name]) {
+      ntv = _.find(ntvChannels, item => item.name === _.trim(forcedMap[service.name]));
+    } else {
+      ntv = _.find(ntvChannels, item => processName(item.name) === processName(service.name));
+    }
 
     if (ntv) {
 //       const index = _.indexOf(ntvChannels, ntv);
@@ -424,6 +436,18 @@ function alignServices() {
 
   console.log('Aligned channels:', ntvAligned.length);
   console.log('Services w/o NTV channel:', orphans.length, orphans.join(', '));
+
+  const ntvNotAligned = _.difference(ntvChannels, ntvAligned);
+
+  util.promisify(fs.open)(ORPHANS_PAIRS_FILE, 'w')
+    .then(fd =>
+      fdWrite(fd, "#### Services w/o NTV channel:\n")
+        .then(()=>fdWrite(fd, orphans.join("\n")))
+        .then(()=>fdWrite(fd,  "\n#### NTV channel candidates (non-aligned):\n"))
+        .then(()=>fdWrite(fd,  _.map(ntvNotAligned, ntv=>ntv.name).join("\n")))
+        .then(() => fdClose(fd))
+    )
+    .catch(err => console.error('Table write error', err))
 
 //  console.log('--Aligned: ', ntvAligned.map(item=>item.name).join(', '));
 //  console.log('--Orphans: ', orphans.join('; '));
@@ -456,6 +480,7 @@ function generatePiconName(service) {
 
 function updateAttribute(service, attr) {
   if (service[attr] !== service.ntv[attr]) {
+    console.log("### ", service.name, attr, service[attr], service.ntv[attr])
     service[attr] = service.ntv[attr];
   }
 }
@@ -464,7 +489,7 @@ function updateServices() {
   console.log('## Update services');
   _.each(services, service => {
     if (service.ntv) {
-      _.each(['name',], attr => updateAttribute(service, attr))
+      _.each(['name'], attr => updateAttribute(service, attr))
     }
   });
 }
@@ -478,7 +503,13 @@ function copyPicons() {
     if (service.ntv) {
       const picName = generatePiconName(service);
 
-      fs.copyFile(CACHE_PATH + '/' + urlToFilename(service.ntv.icon), PICONS_PATH + '/' + picName, (a, b) => {
+      // console.log('==Copy OLD:', CACHE_PATH + '/' + urlToFilename(service.ntv.icon), PICONS_PATH + '/' + picName);
+      // console.log('==Copy NEW:', LOCAL_ICONS_PATH + '/' + service.ntv.local_icon, PICONS_PATH + '/' + picName);
+
+      // fs.copyFile(CACHE_PATH + '/' + urlToFilename(service.ntv.icon), PICONS_PATH + '/' + picName, (a, b) => {
+      //   // console.log(a,b);
+      // });
+      fs.copyFile(LOCAL_ICONS_PATH + '/' + service.ntv.local_icon, PICONS_PATH + '/' + picName, (a, b) => {
         // console.log(a,b);
       });
       //console.log(service.name, ' ==> ', picName);
@@ -488,15 +519,14 @@ function copyPicons() {
 
 function scanLameDb() {
   console.log('## Scan Lame DB');
-  return util.promisify(fs.readFile)(DREAMBOX_LAMEDB_FILE, 'utf-8')
-             .then(text => {
+  return fdRead(DREAMBOX_LAMEDB_FILE, 'utf-8')
+             .then(async text => {
                transponders = getTransponders(text);
                services = getServices(text);
-//console.log("====Services", services)
                alignServices();
                updateServices();
                copyPicons();
-               return createLameDb(transponders, services);
+               return await createLameDb(transponders, services);
              })
              .catch(err => console.error('Read file error', err))
 }
